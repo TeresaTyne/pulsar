@@ -16,37 +16,20 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pulsar.functions.api.utils;
-
-import static org.testng.Assert.assertEquals;
-
-import java.io.Serializable;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import org.testng.annotations.Test;
+package org.apache.pulsar.common.policies.data;
 
 /**
- * Unit test of {@link JavaSerDe}.
+ * Inactive topic deletion mode.
  */
-public class JavaSerDeTest {
+public enum InactiveTopicDeleteMode {
 
-    @Data
-    @AllArgsConstructor
-    private static class TestObject implements Serializable {
+    /**
+     * The topic can be deleted when no subscriptions and no active producers.
+     */
+    delete_when_no_subscriptions,
 
-        private int intField;
-        private String stringField;
-
-    }
-
-    @Test
-    public void testSerDe() {
-        TestObject to = new TestObject(1234, "test-serde-java-object");
-
-        byte[] data = JavaSerDe.of().serialize(to);
-        TestObject deserializeTo = (TestObject) JavaSerDe.of().deserialize(data);
-
-        assertEquals(to, deserializeTo);
-    }
-
+    /**
+     * The topic can be deleted when all subscriptions catchup and no active producers/consumers.
+     */
+    delete_when_subscriptions_caught_up
 }
