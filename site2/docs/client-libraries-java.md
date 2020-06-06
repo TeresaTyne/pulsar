@@ -4,7 +4,9 @@ title: Pulsar Java client
 sidebar_label: Java
 ---
 
-You can use Pulsar Java client to create Java producers, consumers, and [readers](#reader-interface) of messages and to perform [administrative tasks](admin-api-overview.md). The current version of the Java client is **{{pulsar:version}}**.
+You can use Pulsar Java client to create Java [producer](#producer), [consumer](#consumer), and [readers](#reader-interface) of messages and to perform [administrative tasks](admin-api-overview.md). The current version of the Java client is **{{pulsar:version}}**.
+
+All the methods in [producer](#producer), [consumer](#consumer), and [reader](#reader) of a Java client are thread-safe.
 
 Javadoc for the Pulsar client is divided into two domains by package as follows.
 
@@ -606,6 +608,22 @@ consumer2 receives the follwoing information.
 ("key-4", "message-4-2")
 ```
 
+If batching is enabled at the producer side, messages with different keys are added to a batch by default. The broker will dispatch the batch to the consumer, so the default batch mechanism may break the Key_Shared subscription guaranteed message distribution semantics. The producer needs to use the `KeyBasedBatcher`.
+
+```java
+Producer producer = client.newProducer()
+        .topic("my-topic")
+        .batcherBuilder(BatcherBuilder.KEY_BASED)
+        .create();
+```
+Or the producer can disable batching.
+
+```java
+Producer producer = client.newProducer()
+        .topic("my-topic")
+        .enableBatching(false)
+        .create();
+```
 > Note:
 >
 > If the message key is not specified, messages without key are dispatched to one consumer in order by default.

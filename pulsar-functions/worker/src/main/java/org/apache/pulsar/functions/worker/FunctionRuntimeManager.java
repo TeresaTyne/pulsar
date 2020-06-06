@@ -46,7 +46,7 @@ import org.apache.pulsar.functions.secretsproviderconfigurator.DefaultSecretsPro
 import org.apache.pulsar.functions.secretsproviderconfigurator.SecretsProviderConfigurator;
 import org.apache.pulsar.functions.utils.FunctionCommon;
 import org.apache.pulsar.functions.utils.FunctionInstanceId;
-import org.apache.pulsar.functions.utils.Reflections;
+import org.apache.pulsar.common.util.Reflections;
 
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
@@ -131,7 +131,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
 
 
     public FunctionRuntimeManager(WorkerConfig workerConfig, WorkerService workerService, Namespace dlogNamespace,
-                                  MembershipManager membershipManager, ConnectorsManager connectorsManager,
+                                  MembershipManager membershipManager, ConnectorsManager connectorsManager, FunctionsManager functionsManager,
                                   FunctionMetaDataManager functionMetaDataManager) throws Exception {
         this.workerConfig = workerConfig;
         this.workerService = workerService;
@@ -143,6 +143,8 @@ public class FunctionRuntimeManager implements AutoCloseable{
         } else {
             secretsProviderConfigurator = new DefaultSecretsProviderConfigurator();
         }
+        log.info("Initializing secrets provider configurator {} with configs: {}",
+          secretsProviderConfigurator.getClass().getName(), workerConfig.getSecretsProviderConfiguratorConfig());
         secretsProviderConfigurator.init(workerConfig.getSecretsProviderConfiguratorConfig());
 
         Optional<FunctionAuthProvider> functionAuthProvider = Optional.empty();
@@ -194,7 +196,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
         this.runtimeFactory.initialize(workerConfig, authConfig, secretsProviderConfigurator, functionAuthProvider, runtimeCustomizer);
 
         this.functionActioner = new FunctionActioner(this.workerConfig, runtimeFactory,
-                dlogNamespace, connectorsManager, workerService.getBrokerAdmin());
+                dlogNamespace, connectorsManager, functionsManager, workerService.getBrokerAdmin());
 
         this.membershipManager = membershipManager;
         this.functionMetaDataManager = functionMetaDataManager;
@@ -208,16 +210,12 @@ public class FunctionRuntimeManager implements AutoCloseable{
     public void initialize() {
         log.info("/** Initializing Runtime Manager **/");
         try {
-            Reader<byte[]> reader = this.getWorkerService().getClient().newReader()
-                    .topic(this.getWorkerConfig().getFunctionAssignmentTopic()).readCompacted(true)
-                    .startMessageId(MessageId.earliest).create();
-
-            this.functionAssignmentTailer = new FunctionAssignmentTailer(this, reader);
+            this.functionAssignmentTailer = new FunctionAssignmentTailer(this, this.getWorkerService().getClient().newReader(), workerConfig);
             // start init phase
             this.isInitializePhase = true;
             // read all existing messages
-            while (reader.hasMessageAvailable()) {
-                this.functionAssignmentTailer.processAssignment(reader.readNext());
+            while (this.functionAssignmentTailer.getReader().hasMessageAvailable()) {
+                this.functionAssignmentTailer.processAssignment(this.functionAssignmentTailer.getReader().readNext());
             }
             // init phase is done
             this.isInitializePhase = false;
@@ -241,7 +239,6 @@ public class FunctionRuntimeManager implements AutoCloseable{
      */
     public void start() {
         log.info("/** Starting Function Runtime Manager **/");
-        log.info("Starting function assignment tailer...");
         this.functionAssignmentTailer.start();
     }
 
@@ -251,7 +248,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
 
     /**
      * Get current assignments
-     * @return a map of current assignments in the follwing format
+     * @return a map of current assignments in the following format
      * {workerId : {FullyQualifiedInstanceId : Assignment}}
      */
     public synchronized Map<String, Map<String, Assignment>> getCurrentAssignments() {
@@ -323,7 +320,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
         }
     }
 
-    public void restartFunctionInstance(String tenant, String namespace, String functionName, int instanceId,
+    public synchronized void restartFunctionInstance(String tenant, String namespace, String functionName, int instanceId,
             URI uri) throws Exception {
         if (runtimeFactory.externallyManaged()) {
             throw new WebApplicationException(Response.serverError().status(Status.NOT_IMPLEMENTED)
@@ -368,7 +365,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
         }
     }
 
-    public void restartFunctionInstances(String tenant, String namespace, String functionName)
+    public synchronized void restartFunctionInstances(String tenant, String namespace, String functionName)
             throws Exception {
         final String fullFunctionName = String.format("%s/%s/%s", tenant, namespace, functionName);
         Collection<Assignment> assignments = this.findFunctionAssignments(tenant, namespace, functionName);
@@ -756,9 +753,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
         String fullyQualifiedInstanceId = FunctionCommon.getFullyQualifiedInstanceId(assignment.getInstance());
         Map<String, Assignment> assignmentMap = this.workerIdToAssignments.get(assignment.getWorkerId());
         if (assignmentMap != null) {
-            if (assignmentMap.containsKey(fullyQualifiedInstanceId)) {
-                assignmentMap.remove(fullyQualifiedInstanceId);
-            }
+            assignmentMap.remove(fullyQualifiedInstanceId);
             if (assignmentMap.isEmpty()) {
                 this.workerIdToAssignments.remove(assignment.getWorkerId());
             }

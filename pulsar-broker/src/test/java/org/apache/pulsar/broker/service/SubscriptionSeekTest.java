@@ -19,11 +19,15 @@
 package org.apache.pulsar.broker.service;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.pulsar.broker.service.persistent.PersistentSubscription;
@@ -31,6 +35,7 @@ import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClientException;
+import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.util.RelativeTimeUtil;
 import org.testng.annotations.AfterClass;
@@ -39,7 +44,6 @@ import org.testng.annotations.Test;
 
 /**
  */
-@Test
 public class SubscriptionSeekTest extends BrokerTestBase {
     @BeforeClass
     @Override
@@ -76,19 +80,19 @@ public class SubscriptionSeekTest extends BrokerTestBase {
         }
 
         PersistentSubscription sub = topicRef.getSubscription("my-subscription");
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 10);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 10);
 
         consumer.seek(MessageId.latest);
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 0);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 0);
 
         // Wait for consumer to reconnect
         Thread.sleep(500);
         consumer.seek(MessageId.earliest);
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 10);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 10);
 
         Thread.sleep(500);
         consumer.seek(messageIds.get(5));
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 5);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 5);
     }
 
     @Test
@@ -131,16 +135,16 @@ public class SubscriptionSeekTest extends BrokerTestBase {
             producer.send(message.getBytes());
         }
 
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 10);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 10);
 
         long currentTimestamp = System.currentTimeMillis();
         consumer.seek(currentTimestamp);
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 1);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 0);
 
         // Wait for consumer to reconnect
         Thread.sleep(1000);
         consumer.seek(currentTimestamp - resetTimeInMillis);
-        assertEquals(sub.getNumberOfEntriesInBacklog(), 10);
+        assertEquals(sub.getNumberOfEntriesInBacklog(false), 10);
     }
 
     @Test
@@ -176,7 +180,7 @@ public class SubscriptionSeekTest extends BrokerTestBase {
 
         long backlogs = 0;
         for (PersistentSubscription sub : subs) {
-            backlogs += sub.getNumberOfEntriesInBacklog();
+            backlogs += sub.getNumberOfEntriesInBacklog(false);
         }
 
         assertEquals(backlogs, 10);
@@ -185,9 +189,9 @@ public class SubscriptionSeekTest extends BrokerTestBase {
         long currentTimestamp = System.currentTimeMillis();
         consumer.seek(currentTimestamp);
         for (PersistentSubscription sub : subs) {
-            backlogs += sub.getNumberOfEntriesInBacklog();
+            backlogs += sub.getNumberOfEntriesInBacklog(false);
         }
-        assertEquals(backlogs, 2);
+        assertEquals(backlogs, 0);
 
         // Wait for consumer to reconnect
         Thread.sleep(1000);
@@ -195,9 +199,87 @@ public class SubscriptionSeekTest extends BrokerTestBase {
         backlogs = 0;
 
         for (PersistentSubscription sub : subs) {
-            backlogs += sub.getNumberOfEntriesInBacklog();
+            backlogs += sub.getNumberOfEntriesInBacklog(false);
         }
         assertEquals(backlogs, 10);
     }
 
+    @Test
+    public void testShouldCloseAllConsumersForMultipleConsumerDispatcherWhenSeek() throws Exception {
+        final String topicName = "persistent://prop/use/ns-abc/testShouldCloseAllConsumersForMultipleConsumerDispatcherWhenSeek";
+        // Disable pre-fetch in consumer to track the messages received
+        org.apache.pulsar.client.api.Consumer<byte[]> consumer1 = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Shared)
+                .subscriptionName("my-subscription")
+                .subscribe();
+
+        pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Shared)
+                .subscriptionName("my-subscription")
+                .subscribe();
+
+        PersistentTopic topicRef = (PersistentTopic) pulsar.getBrokerService().getTopicReference(topicName).get();
+        assertNotNull(topicRef);
+        assertEquals(topicRef.getSubscriptions().size(), 1);
+        List<Consumer> consumers = topicRef.getSubscriptions().get("my-subscription").getConsumers();
+        assertEquals(consumers.size(), 2);
+        Set<String> connectedSinceSet = new HashSet<>();
+        for (Consumer consumer : consumers) {
+            connectedSinceSet.add(consumer.getStats().getConnectedSince());
+        }
+        assertEquals(connectedSinceSet.size(), 2);
+        consumer1.seek(MessageId.earliest);
+        // Wait for consumer to reconnect
+        Thread.sleep(1000);
+
+        consumers = topicRef.getSubscriptions().get("my-subscription").getConsumers();
+        assertEquals(consumers.size(), 2);
+        for (Consumer consumer : consumers) {
+            assertFalse(connectedSinceSet.contains(consumer.getStats().getConnectedSince()));
+        }
+    }
+
+    @Test
+    public void testOnlyCloseActiveConsumerForSingleActiveConsumerDispatcherWhenSeek() throws Exception {
+        final String topicName = "persistent://prop/use/ns-abc/testOnlyCloseActiveConsumerForSingleActiveConsumerDispatcherWhenSeek";
+        // Disable pre-fetch in consumer to track the messages received
+        org.apache.pulsar.client.api.Consumer<byte[]> consumer1 = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Failover)
+                .subscriptionName("my-subscription")
+                .subscribe();
+
+        pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Failover)
+                .subscriptionName("my-subscription")
+                .subscribe();
+
+        PersistentTopic topicRef = (PersistentTopic) pulsar.getBrokerService().getTopicReference(topicName).get();
+        assertNotNull(topicRef);
+        assertEquals(topicRef.getSubscriptions().size(), 1);
+        List<Consumer> consumers = topicRef.getSubscriptions().get("my-subscription").getConsumers();
+        assertEquals(consumers.size(), 2);
+        Set<String> connectedSinceSet = new HashSet<>();
+        for (Consumer consumer : consumers) {
+            connectedSinceSet.add(consumer.getStats().getConnectedSince());
+        }
+        assertEquals(connectedSinceSet.size(), 2);
+        consumer1.seek(MessageId.earliest);
+        // Wait for consumer to reconnect
+        Thread.sleep(1000);
+
+        consumers = topicRef.getSubscriptions().get("my-subscription").getConsumers();
+        assertEquals(consumers.size(), 2);
+
+        boolean hasConsumerNotDisconnected = false;
+        for (Consumer consumer : consumers) {
+            if (connectedSinceSet.contains(consumer.getStats().getConnectedSince())) {
+                hasConsumerNotDisconnected = true;
+            }
+        }
+        assertTrue(hasConsumerNotDisconnected);
+    }
 }
