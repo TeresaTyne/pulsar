@@ -39,7 +39,7 @@ import org.apache.pulsar.broker.transaction.buffer.exceptions.TransactionNotFoun
 import org.apache.pulsar.broker.transaction.buffer.exceptions.TransactionNotSealedException;
 import org.apache.pulsar.broker.transaction.buffer.exceptions.TransactionSealedException;
 import org.apache.pulsar.broker.transaction.buffer.exceptions.UnexpectedTxnStatusException;
-import org.apache.pulsar.transaction.impl.common.TxnID;
+import org.apache.pulsar.client.api.transaction.TxnID;
 import org.apache.pulsar.transaction.impl.common.TxnStatus;
 
 /**
@@ -102,8 +102,14 @@ class InMemTransactionBuffer implements TransactionBuffer {
         }
 
         @Override
-        public CompletableFuture<Void> appendEntry(long sequenceId, Position position) {
+        public CompletableFuture<Position> appendEntry(long sequenceId, Position position) {
             return FutureUtil.failedFuture(new UnsupportedOperationException());
+        }
+
+        @Override
+        public CompletableFuture<TransactionMeta> committingTxn() {
+            status = TxnStatus.COMMITTING;
+            return CompletableFuture.completedFuture(null);
         }
 
         @Override
@@ -238,7 +244,7 @@ class InMemTransactionBuffer implements TransactionBuffer {
     }
 
     @Override
-    public CompletableFuture<Void> appendBufferToTxn(TxnID txnId,
+    public CompletableFuture<Position> appendBufferToTxn(TxnID txnId,
                                                      long sequenceId,
                                                      ByteBuf buffer) {
         TxnBuffer txnBuffer = getTxnBufferOrCreateIfNotExist(txnId);
@@ -265,6 +271,17 @@ class InMemTransactionBuffer implements TransactionBuffer {
             openFuture.completeExceptionally(e);
         }
         return openFuture;
+    }
+
+    @Override
+    public CompletableFuture<Void> endTxnOnPartition(TxnID txnID, int txnAction) {
+        return FutureUtil.failedFuture(
+                new Exception("Unsupported operation endTxnOnPartition in InMemTransactionBuffer."));
+    }
+
+    @Override
+    public CompletableFuture<Position> commitPartitionTopic(TxnID txnID) {
+        return null;
     }
 
     @Override

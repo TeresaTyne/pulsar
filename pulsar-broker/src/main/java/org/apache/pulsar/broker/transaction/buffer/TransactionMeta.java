@@ -22,7 +22,7 @@ import com.google.common.annotations.Beta;
 import java.util.SortedMap;
 import java.util.concurrent.CompletableFuture;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.pulsar.transaction.impl.common.TxnID;
+import org.apache.pulsar.client.api.transaction.TxnID;
 import org.apache.pulsar.transaction.impl.common.TxnStatus;
 
 /**
@@ -89,7 +89,13 @@ public interface TransactionMeta {
      * @param position the position of transaction log
      * @return
      */
-    CompletableFuture<Void> appendEntry(long sequenceId, Position position);
+    CompletableFuture<Position> appendEntry(long sequenceId, Position position);
+
+    /**
+     * Mark the transaction status is committing.
+     * @return
+     */
+    CompletableFuture<TransactionMeta> committingTxn();
 
     /**
      * Mark the transaction is committed.
